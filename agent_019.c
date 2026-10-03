@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/utsname.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -99,6 +100,112 @@ void *handle_client(void *arg)
                  strlen(response),
                  0);
         }
+
+
+	else if (strcmp(buffer, "SYSINFO") == 0)
+{
+    char response[BUFFER_SIZE];
+    char hostname[256];
+    struct utsname system_info;
+
+    FILE *fp;
+    double uptime = 0.0;
+    double load1 = 0.0;
+    double load5 = 0.0;
+    double load15 = 0.0;
+
+    long mem_total = 0;
+    long mem_available = 0;
+
+    /* 1. Get hostname */
+    if (gethostname(hostname, sizeof(hostname)) != 0)
+    {
+        strcpy(hostname, "UNKNOWN");
+    }
+
+    /* 2. Get OS and kernel information */
+    if (uname(&system_info) != 0)
+    {
+        strcpy(system_info.sysname, "UNKNOWN");
+        strcpy(system_info.release, "UNKNOWN");
+    }
+
+    /* 3. Get system uptime */
+    fp = fopen("/proc/uptime", "r");
+
+    if (fp != NULL)
+    {
+        fscanf(fp, "%lf", &uptime);
+        fclose(fp);
+    }
+
+    /* 4. Get CPU load averages */
+    fp = fopen("/proc/loadavg", "r");
+
+    if (fp != NULL)
+    {
+        fscanf(fp, "%lf %lf %lf",
+               &load1,
+               &load5,
+               &load15);
+
+        fclose(fp);
+    }
+
+    /* 5. Get memory information */
+    fp = fopen("/proc/meminfo", "r");
+
+    if (fp != NULL)
+    {
+        char line[256];
+
+        while (fgets(line, sizeof(line), fp) != NULL)
+        {
+            if (sscanf(line, "MemTotal: %ld kB", &mem_total) == 1)
+            {
+                continue;
+            }
+
+            if (sscanf(line,
+                       "MemAvailable: %ld kB",
+                       &mem_available) == 1)
+            {
+                break;
+            }
+        }
+
+        fclose(fp);
+    }
+
+    snprintf(response,
+             sizeof(response),
+             "OK SYSINFO\n"
+             "HOSTNAME: %s\n"
+             "OS: %s\n"
+             "KERNEL: %s\n"
+             "UPTIME: %.0f seconds\n"
+             "LOAD: %.2f %.2f %.2f\n"
+             "MEMORY_TOTAL: %ld kB\n"
+             "MEMORY_AVAILABLE: %ld kB\n"
+             "SID:%s\n",
+             hostname,
+             system_info.sysname,
+             system_info.release,
+             uptime,
+             load1,
+             load5,
+             load15,
+             mem_total,
+             mem_available,
+             SID);
+
+    send(connfd,
+         response,
+         strlen(response),
+         0);
+}
+
+
 
         /* Temporary response for future commands */
         else
