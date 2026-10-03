@@ -6,20 +6,105 @@
 #include <sys/utsname.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <arpa/inet.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
 #define PORT 9430
+#define UDP_PORT 9530
 #define AUTH_TOKEN "OPS-0019"
 #define SID "9100"
 #define BUFFER_SIZE 1024
 
+
+void send_udp_monitor(const char *client_ip, int seconds)
+{
+    int udp_sock;
+    struct sockaddr_in udp_addr;
+
+    udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (udp_sock < 0)
+    {
+        perror("UDP socket");
+        return;
+    }
+
+    memset(&udp_addr, 0, sizeof(udp_addr));
+
+    udp_addr.sin_family = AF_INET;
+    udp_addr.sin_port = htons(UDP_PORT);
+
+    if (inet_pton(AF_INET,
+                  client_ip,
+                  &udp_addr.sin_addr) <= 0)
+    {
+        perror("inet_pton");
+        close(udp_sock);
+        return;
+    }
+
+    for (int i = 1; i <= seconds; i++)
+    {
+        char message[256];
+
+        snprintf(message,
+                 sizeof(message),
+                 "MONITOR %d/%d SID:%s",
+                 i,
+                 seconds,
+                 SID);
+
+        sendto(udp_sock,
+               message,
+               strlen(message),
+               0,
+               (struct sockaddr *)&udp_addr,
+               sizeof(udp_addr));
+
+        sleep(1);
+    }
+
+    close(udp_sock);
+}
+
+struct client_info
+{
+    int connfd;
+    struct sockaddr_in client_addr;
+};
+
 void *handle_client(void *arg)
 {
-    int connfd = *(int *)arg;
-    free(arg);
+    struct client_info *info =
+    (struct client_info *)arg;
+
+int connfd = info->connfd;
+
+struct sockaddr_in client_addr =
+    info->client_addr;
+
+free(info);
+
+char client_ip[INET_ADDRSTRLEN];
+
+if (inet_ntop(AF_INET,
+              &client_addr.sin_addr,
+              client_ip,
+              sizeof(client_ip)) == NULL)
+{
+    perror("inet_ntop");
+    close(connfd);
+    return NULL;
+}
+
+printf("Controller IP: %s\n", client_ip);
+
+
+
+
 
     char buffer[BUFFER_SIZE];
     int authenticated = 0;
@@ -211,7 +296,7 @@ else if (strcmp(buffer, "LISTPROC") == 0)
     DIR *proc_dir;
     struct dirent *entry;
 
-    char path[256];
+    char path[512];
     char line[256];
 
     char process_name[256];
@@ -299,7 +384,7 @@ else if (strcmp(buffer, "LISTPROC") == 0)
 
             fclose(fp);
 
-            char process_line[512];
+            char process_line[1024];
 
             snprintf(process_line,
                      sizeof(process_line),
@@ -795,6 +880,46 @@ if (strcmp(ready_buffer, "READY") != 0)
     fclose(file);
 }
 
+else if (strncmp(buffer, "MONITOR ", 8) == 0)
+{
+    int seconds;
+
+    if (sscanf(buffer, "MONITOR %d", &seconds) != 1 ||
+        seconds <= 0 ||
+        seconds > 60)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 003 UNKNOWN_COMMAND SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    char response[BUFFER_SIZE];
+
+    snprintf(response,
+             sizeof(response),
+             "OK MONITOR %d UDP:%d SID:%s\n",
+             seconds,
+             UDP_PORT,
+             SID);
+
+    send(connfd,
+         response,
+         strlen(response),
+         0);
+
+    send_udp_monitor(client_ip, seconds);
+}
+
 
         /* Temporary response for future commands */
         else
@@ -897,91 +1022,34 @@ while (1)
      * Allocate separate memory for this Controller's
      * socket descriptor.
      */
-    int *client_socket = malloc(sizeof(int));
+     struct client_info *info =
+    malloc(sizeof(struct client_info));
 
-    if (client_socket == NULL)
-    {
-        perror("malloc");
-        close(connfd);
-        continue;
-    }
-
-    *client_socket = connfd;
-
-    pthread_t thread_id;
-
-    /*
-     * Create a new thread for this Controller.
-     */
-    if (pthread_create(&thread_id,
-                       NULL,
-                       handle_client,
-                       client_socket) != 0)
-    {
-        perror("pthread_create");
-        close(connfd);
-        free(client_socket);
-        continue;
-    }
-
-    /*
-     * We do not need to pthread_join() this thread.
-     */
-    pthread_detach(thread_id);
+if (info == NULL)
+{
+    perror("malloc");
+    close(connfd);
+    continue;
 }
 
-close(listenfd);
+/* Save BOTH socket and Controller address */
+info->connfd = connfd;
+info->client_addr = client_addr;
 
-return 0;
-/* Step 5: Continuously accept Controllers */
+pthread_t thread_id;
 
-while (1)
+if (pthread_create(&thread_id,
+                   NULL,
+                   handle_client,
+                   info) != 0)
 {
-    client_len = sizeof(client_addr);
+    perror("pthread_create");
+    close(connfd);
+    free(info);
+    continue;
+}
 
-    connfd = accept(listenfd,
-                    (struct sockaddr *)&client_addr,
-                    &client_len);
-
-    if (connfd < 0)
-    {
-        perror("accept");
-        continue;
-    }
-
-    printf("Controller connected successfully!\n");
-
-    /*
-     * Allocate separate memory for this Controller's
-     * socket descriptor.
-     */
-    int *client_socket = malloc(sizeof(int));
-
-    if (client_socket == NULL)
-    {
-        perror("malloc");
-        close(connfd);
-        continue;
-    }
-
-    *client_socket = connfd;
-
-    pthread_t thread_id;
-
-    /*
-     * Create a new thread for this Controller.
-     */
-    if (pthread_create(&thread_id,
-                       NULL,
-                       handle_client,
-                       client_socket) != 0)
-    {
-        perror("pthread_create");
-        close(connfd);
-        free(client_socket);
-        continue;
-    }
-
+pthread_detach(thread_id);
     /*
      * We do not need to pthread_join() this thread.
      */
