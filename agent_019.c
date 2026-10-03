@@ -9,33 +9,120 @@
 #include <netinet/in.h>
 
 #define PORT 9430
-
+#define AUTH_TOKEN "OPS-0019"
+#define SID "9100"
+#define BUFFER_SIZE 1024
 
 void *handle_client(void *arg)
 {
     int connfd = *(int *)arg;
-
     free(arg);
+
+    char buffer[BUFFER_SIZE];
+    int authenticated = 0;
+    ssize_t bytes_received;
 
     printf("Controller is being handled by a thread.\n");
 
-    /*
-     * Later we will put:
-     *
-     * AUTH
-     * SYSINFO
-     * LISTPROC
-     * EXEC
-     * PUT
-     * GET
-     *
-     * inside this function.
-     */
+    while (1)
+    {
+        memset(buffer, 0, sizeof(buffer));
+
+        bytes_received = recv(connfd,
+                              buffer,
+                              sizeof(buffer) - 1,
+                              0);
+
+        if (bytes_received <= 0)
+        {
+            printf("Controller disconnected.\n");
+            break;
+        }
+
+        buffer[bytes_received] = '\0';
+
+        /* Remove newline from received command */
+        buffer[strcspn(buffer, "\r\n")] = '\0';
+
+        printf("Received: %s\n", buffer);
+
+
+        /* AUTH command */
+        if (strncmp(buffer, "AUTH ", 5) == 0)
+        {
+            char *token = buffer + 5;
+
+            if (strcmp(token, AUTH_TOKEN) == 0)
+            {
+                authenticated = 1;
+
+                char response[BUFFER_SIZE];
+
+                snprintf(response,
+                         sizeof(response),
+                         "OK AUTHENTICATED SID:%s\n",
+                         SID);
+
+                send(connfd,
+                     response,
+                     strlen(response),
+                     0);
+            }
+            else
+            {
+                char response[BUFFER_SIZE];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 001 AUTH_FAILED SID:%s\n",
+                         SID);
+
+                send(connfd,
+                     response,
+                     strlen(response),
+                     0);
+            }
+        }
+
+        /* Commands before authentication */
+        else if (!authenticated)
+        {
+            char response[BUFFER_SIZE];
+
+            snprintf(response,
+                     sizeof(response),
+                     "ERR 001 AUTH_REQUIRED SID:%s\n",
+                     SID);
+
+            send(connfd,
+                 response,
+                 strlen(response),
+                 0);
+        }
+
+        /* Temporary response for future commands */
+        else
+        {
+            char response[BUFFER_SIZE];
+
+            snprintf(response,
+                     sizeof(response),
+                     "ERR 003 UNKNOWN_COMMAND SID:%s\n",
+                     SID);
+
+            send(connfd,
+                 response,
+                 strlen(response),
+                 0);
+        }
+    }
 
     close(connfd);
 
     return NULL;
 }
+
+
 
 
 

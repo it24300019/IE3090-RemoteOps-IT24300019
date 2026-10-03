@@ -50,10 +50,49 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    printf("Connected to RemoteOps Agent on port %d!\n", PORT);
+printf("Connected to RemoteOps Agent on port %d!\n", PORT);
 
-    /* Step 4: Close connection */
-    close(sockfd);
+char buffer[1024];
+char response[1024];
 
-    return 0;
+while (1)
+{
+    printf("RemoteOps> ");
+
+    if (fgets(buffer, sizeof(buffer), stdin) == NULL)
+    {
+        break;
+    }
+
+    if (send(sockfd,
+             buffer,
+             strlen(buffer),
+             0) < 0)
+    {
+        perror("send");
+        break;
+    }
+
+    memset(response, 0, sizeof(response));
+
+    ssize_t bytes_received =
+        recv(sockfd,
+             response,
+             sizeof(response) - 1,
+             0);
+
+    if (bytes_received <= 0)
+    {
+        printf("Agent disconnected.\n");
+        break;
+    }
+
+    response[bytes_received] = '\0';
+
+    printf("%s", response);
+}
+
+close(sockfd);
+
+return 0;
 }
