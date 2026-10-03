@@ -589,20 +589,6 @@ if (send(sockfd,
     break;
 }
 
-
-
-
-
-
-    if (send(sockfd,
-             buffer,
-             strlen(buffer),
-             0) < 0)
-    {
-        perror("send");
-        break;
-    }
-
     memset(response, 0, sizeof(response));
 
 ssize_t bytes_received =
@@ -626,7 +612,7 @@ printf("%s", response);
  * Continue receiving until END SID:9100 arrives.
  */
 if (strncmp(buffer, "LISTPROC", 8) == 0 ||
-    strncmp(buffer, "EXEC DF", 7) == 0)
+    strncmp(buffer, "EXEC DISKFREE", 7) == 0)
 {
     while (strstr(response, "END SID:9100") == NULL)
     {
