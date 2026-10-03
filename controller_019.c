@@ -95,7 +95,8 @@ printf("%s", response);
  * LISTPROC is a multi-part response.
  * Continue receiving until END SID:9100 arrives.
  */
-if (strncmp(buffer, "LISTPROC", 8) == 0)
+if (strncmp(buffer, "LISTPROC", 8) == 0 ||
+    strncmp(buffer, "EXEC DF", 7) == 0)
 {
     while (strstr(response, "END SID:9100") == NULL)
     {

@@ -330,6 +330,173 @@ else if (strcmp(buffer, "LISTPROC") == 0)
     }
 }
 
+else if (strncmp(buffer, "EXEC ", 5) == 0)
+{
+    char *exec_command = buffer + 5;
+
+    char response[BUFFER_SIZE];
+
+    /*
+     * EXEC DATE
+     */
+    if (strcmp(exec_command, "DATE") == 0)
+    {
+        FILE *fp;
+        char output[512];
+
+        fp = popen("date", "r");
+
+        if (fp == NULL)
+        {
+            snprintf(response,
+                     sizeof(response),
+                     "ERR 002 INTERNAL_ERROR SID:%s\n",
+                     SID);
+        }
+        else
+        {
+            memset(output, 0, sizeof(output));
+
+            if (fgets(output, sizeof(output), fp) == NULL)
+            {
+                strcpy(output, "Unable to read date\n");
+            }
+
+            pclose(fp);
+
+            snprintf(response,
+                     sizeof(response),
+                     "OK EXEC DATE\n"
+                     "%s"
+                     "SID:%s\n",
+                     output,
+                     SID);
+        }
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+    }
+
+    /*
+     * EXEC UPTIME
+     */
+    else if (strcmp(exec_command, "UPTIME") == 0)
+    {
+        FILE *fp;
+        char output[512];
+
+        fp = popen("uptime", "r");
+
+        if (fp == NULL)
+        {
+            snprintf(response,
+                     sizeof(response),
+                     "ERR 002 INTERNAL_ERROR SID:%s\n",
+                     SID);
+        }
+        else
+        {
+            memset(output, 0, sizeof(output));
+
+            if (fgets(output, sizeof(output), fp) == NULL)
+            {
+                strcpy(output, "Unable to read uptime\n");
+            }
+
+            pclose(fp);
+
+            snprintf(response,
+                     sizeof(response),
+                     "OK EXEC UPTIME\n"
+                     "%s"
+                     "SID:%s\n",
+                     output,
+                     SID);
+        }
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+    }
+
+    /*
+     * EXEC DF
+     */
+    else if (strcmp(exec_command, "DF") == 0)
+    {
+        FILE *fp;
+
+        fp = popen("df -h", "r");
+
+        if (fp == NULL)
+        {
+            snprintf(response,
+                     sizeof(response),
+                     "ERR 002 INTERNAL_ERROR SID:%s\n",
+                     SID);
+
+            send(connfd,
+                 response,
+                 strlen(response),
+                 0);
+        }
+        else
+        {
+            snprintf(response,
+                     sizeof(response),
+                     "OK EXEC DF\n");
+
+            send(connfd,
+                 response,
+                 strlen(response),
+                 0);
+
+            char line[512];
+
+            while (fgets(line, sizeof(line), fp) != NULL)
+            {
+                send(connfd,
+                     line,
+                     strlen(line),
+                     0);
+            }
+
+            pclose(fp);
+
+            snprintf(response,
+                     sizeof(response),
+                     "END SID:%s\n",
+                     SID);
+
+            send(connfd,
+                 response,
+                 strlen(response),
+                 0);
+        }
+    }
+
+    /*
+     * Anything other than DATE, UPTIME or DF
+     * is NOT allowed.
+     */
+    else
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 004 EXEC_NOT_ALLOWED SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+    }
+}
+
+
 
 
         /* Temporary response for future commands */
