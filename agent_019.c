@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/utsname.h>
+#include <dirent.h>
+#include <ctype.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -203,6 +205,129 @@ void *handle_client(void *arg)
          response,
          strlen(response),
          0);
+}
+else if (strcmp(buffer, "LISTPROC") == 0)
+{
+    DIR *proc_dir;
+    struct dirent *entry;
+
+    char path[256];
+    char line[256];
+
+    char process_name[256];
+    char process_state = '?';
+
+    FILE *fp;
+
+    proc_dir = opendir("/proc");
+
+    if (proc_dir == NULL)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 002 INTERNAL_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+    }
+    else
+    {
+        char header[BUFFER_SIZE];
+
+        snprintf(header,
+                 sizeof(header),
+                 "OK LISTPROC\n"
+                 "PID\tNAME\tSTATE\n");
+
+        send(connfd,
+             header,
+             strlen(header),
+             0);
+
+        while ((entry = readdir(proc_dir)) != NULL)
+        {
+            /*
+             * Process directories in /proc have
+             * numeric names such as:
+             *
+             * /proc/1
+             * /proc/520
+             * /proc/1342
+             */
+
+            if (!isdigit((unsigned char)entry->d_name[0]))
+            {
+                continue;
+            }
+
+            snprintf(path,
+                     sizeof(path),
+                     "/proc/%s/status",
+                     entry->d_name);
+
+            fp = fopen(path, "r");
+
+            if (fp == NULL)
+            {
+                continue;
+            }
+
+            strcpy(process_name, "UNKNOWN");
+            process_state = '?';
+
+            while (fgets(line, sizeof(line), fp) != NULL)
+            {
+                if (strncmp(line, "Name:", 5) == 0)
+                {
+                    sscanf(line,
+                           "Name:\t%255s",
+                           process_name);
+                }
+
+                else if (strncmp(line, "State:", 6) == 0)
+                {
+                    sscanf(line,
+                           "State:\t%c",
+                           &process_state);
+                }
+            }
+
+            fclose(fp);
+
+            char process_line[512];
+
+            snprintf(process_line,
+                     sizeof(process_line),
+                     "%s\t%s\t%c\n",
+                     entry->d_name,
+                     process_name,
+                     process_state);
+
+            send(connfd,
+                 process_line,
+                 strlen(process_line),
+                 0);
+        }
+
+        closedir(proc_dir);
+
+        char end_message[64];
+
+	snprintf(end_message,
+         sizeof(end_message),
+         "END SID:%s\n",
+         SID);
+
+        send(connfd,
+             end_message,
+             strlen(end_message),
+             0);
+    }
 }
 
 
