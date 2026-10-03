@@ -496,7 +496,304 @@ else if (strncmp(buffer, "EXEC ", 5) == 0)
     }
 }
 
+else if (strncmp(buffer, "PUT ", 4) == 0)
+{
+    char filename[256];
+    long file_size;
 
+    if (sscanf(buffer,
+               "PUT %255s %ld",
+               filename,
+               &file_size) != 2 ||
+        file_size < 0)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    char save_path[512];
+
+snprintf(save_path,
+         sizeof(save_path),
+         "uploads/%s",
+         filename);
+
+FILE *file = fopen(save_path, "wb");
+    if (file == NULL)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    /*
+     * Tell Controller that Agent is ready
+     * to receive file bytes.
+     */
+    char ready_message[64];
+
+    snprintf(ready_message,
+             sizeof(ready_message),
+             "READY SID:%s\n",
+             SID);
+
+    send(connfd,
+         ready_message,
+         strlen(ready_message),
+         0);
+
+    long total_received = 0;
+    int file_error = 0;
+
+    while (total_received < file_size)
+    {
+        char file_buffer[4096];
+
+        long remaining = file_size - total_received;
+
+        size_t amount_to_receive =
+            remaining < (long)sizeof(file_buffer)
+                ? (size_t)remaining
+                : sizeof(file_buffer);
+
+        ssize_t received =
+            recv(connfd,
+                 file_buffer,
+                 amount_to_receive,
+                 0);
+
+        if (received <= 0)
+        {
+            file_error = 1;
+            break;
+        }
+
+        size_t written =
+            fwrite(file_buffer,
+                   1,
+                   (size_t)received,
+                   file);
+
+        if (written != (size_t)received)
+        {
+            file_error = 1;
+            break;
+        }
+
+        total_received += received;
+    }
+
+    fclose(file);
+
+    char response[BUFFER_SIZE];
+
+    if (file_error || total_received != file_size)
+    {
+	remove(save_path);
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_ERROR SID:%s\n",
+                 SID);
+    }
+    else
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "OK PUT %s %ld SID:%s\n",
+                 filename,
+                 total_received,
+                 SID);
+    }
+
+    send(connfd,
+         response,
+         strlen(response),
+         0);
+}
+
+else if (strncmp(buffer, "GET ", 4) == 0)
+{
+    char filename[256];
+    char filepath[512];
+    char response[BUFFER_SIZE];
+
+    if (sscanf(buffer, "GET %255s", filename) != 1)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    snprintf(filepath,
+             sizeof(filepath),
+             "uploads/%s",
+             filename);
+
+    FILE *file = fopen(filepath, "rb");
+
+    if (file == NULL)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    /* Find file size */
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        fclose(file);
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    long file_size = ftell(file);
+
+    if (file_size < 0)
+    {
+        fclose(file);
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    rewind(file);
+
+    /* Tell Controller how many bytes are coming */
+    snprintf(response,
+             sizeof(response),
+             "OK GET %s %ld SID:%s\n",
+             filename,
+             file_size,
+             SID);
+
+    send(connfd,
+         response,
+         strlen(response),
+         0);
+
+    /*
+ * Wait for Controller to confirm that
+ * it is ready to receive file bytes.
+ */
+char ready_buffer[64];
+
+memset(ready_buffer, 0, sizeof(ready_buffer));
+
+ssize_t ready_received =
+    recv(connfd,
+         ready_buffer,
+         sizeof(ready_buffer) - 1,
+         0);
+
+if (ready_received <= 0)
+{
+    fclose(file);
+    continue;
+}
+
+ready_buffer[ready_received] = '\0';
+ready_buffer[strcspn(ready_buffer, "\r\n")] = '\0';
+
+if (strcmp(ready_buffer, "READY") != 0)
+{
+    fclose(file);
+    continue;
+}
+
+
+
+    /* Send exact file bytes */
+    char file_buffer[4096];
+    size_t bytes_read;
+
+    while ((bytes_read =
+                fread(file_buffer,
+                      1,
+                      sizeof(file_buffer),
+                      file)) > 0)
+    {
+        size_t total_sent = 0;
+
+        while (total_sent < bytes_read)
+        {
+            ssize_t sent =
+                send(connfd,
+                     file_buffer + total_sent,
+                     bytes_read - total_sent,
+                     0);
+
+            if (sent <= 0)
+            {
+                break;
+            }
+
+            total_sent += (size_t)sent;
+        }
+
+        if (total_sent < bytes_read)
+        {
+            break;
+        }
+    }
+
+    fclose(file);
+}
 
 
         /* Temporary response for future commands */

@@ -64,6 +64,302 @@ while (1)
         break;
     }
 
+    if (strncmp(buffer, "PUT ", 4) == 0)
+{
+    char filename[256];
+
+    if (sscanf(buffer,
+               "PUT %255s",
+               filename) != 1)
+    {
+        printf("Usage: PUT <filename>\n");
+        continue;
+    }
+
+    FILE *file = fopen(filename, "rb");
+
+    if (file == NULL)
+    {
+        printf("Local file could not be opened.\n");
+        continue;
+    }
+
+    /*
+     * Find file size.
+     */
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        printf("Unable to determine file size.\n");
+        fclose(file);
+        continue;
+    }
+
+    long file_size = ftell(file);
+
+    if (file_size < 0)
+    {
+        printf("Unable to determine file size.\n");
+        fclose(file);
+        continue;
+    }
+
+    rewind(file);
+
+    /*
+     * Send PUT filename bytes command.
+     */
+    char put_command[512];
+
+    snprintf(put_command,
+             sizeof(put_command),
+             "PUT %s %ld\n",
+             filename,
+             file_size);
+
+    if (send(sockfd,
+             put_command,
+             strlen(put_command),
+             0) < 0)
+    {
+        perror("send");
+        fclose(file);
+        break;
+    }
+
+    /*
+     * Wait until Agent says READY.
+     */
+    memset(response, 0, sizeof(response));
+
+    ssize_t bytes_received =
+        recv(sockfd,
+             response,
+             sizeof(response) - 1,
+             0);
+
+    if (bytes_received <= 0)
+    {
+        printf("Agent disconnected.\n");
+        fclose(file);
+        break;
+    }
+
+    response[bytes_received] = '\0';
+
+    if (strncmp(response, "READY", 5) != 0)
+    {
+        printf("%s", response);
+        fclose(file);
+        continue;
+    }
+
+    /*
+     * Send the actual file bytes.
+     */
+    char file_buffer[4096];
+    size_t bytes_read;
+
+    while ((bytes_read =
+                fread(file_buffer,
+                      1,
+                      sizeof(file_buffer),
+                      file)) > 0)
+    {
+        size_t total_sent = 0;
+
+        while (total_sent < bytes_read)
+        {
+            ssize_t sent =
+                send(sockfd,
+                     file_buffer + total_sent,
+                     bytes_read - total_sent,
+                     0);
+
+            if (sent <= 0)
+            {
+                perror("send");
+                fclose(file);
+                return 1;
+            }
+
+            total_sent += (size_t)sent;
+        }
+    }
+
+    fclose(file);
+
+    /*
+     * Receive final Agent response.
+     */
+    memset(response, 0, sizeof(response));
+
+    bytes_received =
+        recv(sockfd,
+             response,
+             sizeof(response) - 1,
+             0);
+
+    if (bytes_received <= 0)
+    {
+        printf("Agent disconnected.\n");
+        break;
+    }
+
+    response[bytes_received] = '\0';
+
+    printf("%s", response);
+
+    continue;
+}
+    if (strncmp(buffer, "GET ", 4) == 0)
+{
+    char filename[256];
+
+    if (sscanf(buffer,
+               "GET %255s",
+               filename) != 1)
+    {
+        printf("Usage: GET <filename>\n");
+        continue;
+    }
+
+    /*
+     * Send GET command to Agent.
+     */
+    if (send(sockfd,
+             buffer,
+             strlen(buffer),
+             0) < 0)
+    {
+        perror("send");
+        break;
+    }
+
+    /*
+     * Receive GET header.
+     */
+    memset(response, 0, sizeof(response));
+
+    ssize_t bytes_received =
+        recv(sockfd,
+             response,
+             sizeof(response) - 1,
+             0);
+
+    if (bytes_received <= 0)
+    {
+        printf("Agent disconnected.\n");
+        break;
+    }
+
+    response[bytes_received] = '\0';
+
+    /*
+     * Check whether Agent returned an error.
+     */
+    if (strncmp(response, "ERR ", 4) == 0)
+    {
+        printf("%s", response);
+        continue;
+    }
+
+    long file_size;
+
+    if (sscanf(response,
+               "OK GET %*s %ld",
+               &file_size) != 1)
+    {
+        printf("Invalid GET response from Agent.\n");
+        continue;
+    }
+
+    printf("%s", response);
+    /*
+ * Tell Agent that Controller is now
+ * ready to receive the file bytes.
+ */
+const char *ready_message = "READY\n";
+
+if (send(sockfd,
+         ready_message,
+         strlen(ready_message),
+         0) < 0)
+{
+    perror("send");
+    break;
+}
+
+
+    /*
+     * Save using a different local filename.
+     */
+    char local_filename[512];
+
+    snprintf(local_filename,
+             sizeof(local_filename),
+             "downloaded_%s",
+             filename);
+
+    FILE *file = fopen(local_filename, "wb");
+
+    if (file == NULL)
+    {
+        printf("Unable to create local file.\n");
+        continue;
+    }
+
+    long total_received = 0;
+
+    while (total_received < file_size)
+    {
+        char file_buffer[4096];
+
+        long remaining =
+            file_size - total_received;
+
+        size_t amount_to_receive =
+            remaining < (long)sizeof(file_buffer)
+                ? (size_t)remaining
+                : sizeof(file_buffer);
+
+        ssize_t received =
+            recv(sockfd,
+                 file_buffer,
+                 amount_to_receive,
+                 0);
+
+        if (received <= 0)
+        {
+            printf("File transfer failed.\n");
+            break;
+        }
+
+        fwrite(file_buffer,
+               1,
+               (size_t)received,
+               file);
+
+        total_received += received;
+    }
+
+    fclose(file);
+
+    if (total_received == file_size)
+    {
+        printf("Downloaded %s (%ld bytes)\n",
+               local_filename,
+               total_received);
+    }
+    else
+    {
+        printf("GET failed.\n");
+        remove(local_filename);
+    }
+
+    continue;
+}
+
+
     if (send(sockfd,
              buffer,
              strlen(buffer),
