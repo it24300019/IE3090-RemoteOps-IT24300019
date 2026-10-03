@@ -2,12 +2,42 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
 #define PORT 9430
+
+
+void *handle_client(void *arg)
+{
+    int connfd = *(int *)arg;
+
+    free(arg);
+
+    printf("Controller is being handled by a thread.\n");
+
+    /*
+     * Later we will put:
+     *
+     * AUTH
+     * SYSINFO
+     * LISTPROC
+     * EXEC
+     * PUT
+     * GET
+     *
+     * inside this function.
+     */
+
+    close(connfd);
+
+    return NULL;
+}
+
+
 
 int main()
 {
@@ -62,7 +92,10 @@ int main()
     printf("RemoteOps Agent listening on port %d...\n", PORT);
 
 
-    /* Step 5: Accept one Controller */
+/* Step 5: Continuously accept Controllers */
+
+while (1)
+{
     client_len = sizeof(client_addr);
 
     connfd = accept(listenfd,
@@ -72,16 +105,106 @@ int main()
     if (connfd < 0)
     {
         perror("accept");
-        close(listenfd);
-        exit(EXIT_FAILURE);
+        continue;
     }
 
     printf("Controller connected successfully!\n");
 
+    /*
+     * Allocate separate memory for this Controller's
+     * socket descriptor.
+     */
+    int *client_socket = malloc(sizeof(int));
 
-    /* Step 6: Close sockets */
-    close(connfd);
-    close(listenfd);
+    if (client_socket == NULL)
+    {
+        perror("malloc");
+        close(connfd);
+        continue;
+    }
 
-    return 0;
+    *client_socket = connfd;
+
+    pthread_t thread_id;
+
+    /*
+     * Create a new thread for this Controller.
+     */
+    if (pthread_create(&thread_id,
+                       NULL,
+                       handle_client,
+                       client_socket) != 0)
+    {
+        perror("pthread_create");
+        close(connfd);
+        free(client_socket);
+        continue;
+    }
+
+    /*
+     * We do not need to pthread_join() this thread.
+     */
+    pthread_detach(thread_id);
+}
+
+close(listenfd);
+
+return 0;
+/* Step 5: Continuously accept Controllers */
+
+while (1)
+{
+    client_len = sizeof(client_addr);
+
+    connfd = accept(listenfd,
+                    (struct sockaddr *)&client_addr,
+                    &client_len);
+
+    if (connfd < 0)
+    {
+        perror("accept");
+        continue;
+    }
+
+    printf("Controller connected successfully!\n");
+
+    /*
+     * Allocate separate memory for this Controller's
+     * socket descriptor.
+     */
+    int *client_socket = malloc(sizeof(int));
+
+    if (client_socket == NULL)
+    {
+        perror("malloc");
+        close(connfd);
+        continue;
+    }
+
+    *client_socket = connfd;
+
+    pthread_t thread_id;
+
+    /*
+     * Create a new thread for this Controller.
+     */
+    if (pthread_create(&thread_id,
+                       NULL,
+                       handle_client,
+                       client_socket) != 0)
+    {
+        perror("pthread_create");
+        close(connfd);
+        free(client_socket);
+        continue;
+    }
+
+    /*
+     * We do not need to pthread_join() this thread.
+     */
+    pthread_detach(thread_id);
+
+}
+close(listenfd);
+return 0;
 }
