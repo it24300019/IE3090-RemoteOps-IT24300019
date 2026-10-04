@@ -500,8 +500,37 @@ if (strcmp(buffer, "MONITOR STOP") == 0)
     continue;
 }
 
-/* ===== MONITOR ENDS HERE ===== */
+/*  MONITOR ENDS */
 
+
+/*  QUIT COMMAND */
+if (strcmp(buffer, "QUIT") == 0)
+{
+    if (send(sockfd,
+             buffer,
+             strlen(buffer),
+             0) < 0)
+    {
+        perror("send");
+        break;
+    }
+
+    memset(response, 0, sizeof(response));
+
+    ssize_t quit_received =
+        recv(sockfd,
+             response,
+             sizeof(response) - 1,
+             0);
+
+    if (quit_received > 0)
+    {
+        response[quit_received] = '\0';
+        printf("%s", response);
+    }
+
+    break;
+}
 
 /* Your existing normal command code */
 if (send(sockfd,
