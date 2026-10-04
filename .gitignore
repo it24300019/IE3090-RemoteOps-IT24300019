@@ -1,3 +1,10 @@
 agent_019
 controller_019
-*.o
+
+*_broken.c
+*_before_*.c
+
+downloaded_*.txt
+
+remoteops_IT24300019.log
+agentfiles/
