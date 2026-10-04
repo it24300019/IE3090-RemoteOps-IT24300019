@@ -19,8 +19,18 @@
 #define BUFFER_SIZE 1024
 
 
-void send_udp_monitor(const char *client_ip, int seconds)
+struct monitor_info
 {
+    char client_ip[INET_ADDRSTRLEN];
+    int udp_port;
+    volatile int *running;
+};
+
+void *send_udp_monitor(void *arg)
+{
+    struct monitor_info *info =
+        (struct monitor_info *)arg;
+
     int udp_sock;
     struct sockaddr_in udp_addr;
 
@@ -29,47 +39,132 @@ void send_udp_monitor(const char *client_ip, int seconds)
     if (udp_sock < 0)
     {
         perror("UDP socket");
-        return;
+        free(info);
+        return NULL;
     }
 
     memset(&udp_addr, 0, sizeof(udp_addr));
 
     udp_addr.sin_family = AF_INET;
-    udp_addr.sin_port = htons(UDP_PORT);
+    udp_addr.sin_port = htons(info->udp_port);
 
     if (inet_pton(AF_INET,
-                  client_ip,
+                  info->client_ip,
                   &udp_addr.sin_addr) <= 0)
     {
         perror("inet_pton");
         close(udp_sock);
-        return;
+        free(info);
+        return NULL;
     }
 
-    for (int i = 1; i <= seconds; i++)
+while (*(info->running))
+{
+    char message[256];
+
+    double uptime = 0.0;
+    double load1 = 0.0;
+    double load5 = 0.0;
+    double load15 = 0.0;
+
+    long mem_total = 0;
+    long mem_available = 0;
+
+    FILE *fp;
+
+    /*
+     * Read current system uptime.
+     */
+    fp = fopen("/proc/uptime", "r");
+
+    if (fp != NULL)
     {
-        char message[256];
-
-        snprintf(message,
-                 sizeof(message),
-                 "MONITOR %d/%d SID:%s",
-                 i,
-                 seconds,
-                 SID);
-
-        sendto(udp_sock,
-               message,
-               strlen(message),
-               0,
-               (struct sockaddr *)&udp_addr,
-               sizeof(udp_addr));
-
-        sleep(1);
+        fscanf(fp, "%lf", &uptime);
+        fclose(fp);
     }
 
-    close(udp_sock);
+    /*
+     * Read current CPU load averages.
+     */
+    fp = fopen("/proc/loadavg", "r");
+
+    if (fp != NULL)
+    {
+        fscanf(fp,
+               "%lf %lf %lf",
+               &load1,
+               &load5,
+               &load15);
+
+        fclose(fp);
+    }
+
+    /*
+     * Read current memory information.
+     */
+    fp = fopen("/proc/meminfo", "r");
+
+    if (fp != NULL)
+    {
+        char line[256];
+
+        while (fgets(line,
+                     sizeof(line),
+                     fp) != NULL)
+        {
+            if (sscanf(line,
+                       "MemTotal: %ld kB",
+                       &mem_total) == 1)
+            {
+                continue;
+            }
+
+            if (sscanf(line,
+                       "MemAvailable: %ld kB",
+                       &mem_available) == 1)
+            {
+                break;
+            }
+        }
+
+        fclose(fp);
+    }
+
+    long mem_used =
+        mem_total - mem_available;
+
+    snprintf(message,
+             sizeof(message),
+             "SYSINFO UPTIME:%.0f "
+             "LOAD:%.2f,%.2f,%.2f "
+             "MEM_USED:%ldkB "
+             "MEM_TOTAL:%ldkB "
+             "SID:%s",
+             uptime,
+             load1,
+             load5,
+             load15,
+             mem_used,
+             mem_total,
+             SID);
+
+    sendto(udp_sock,
+           message,
+           strlen(message),
+           0,
+           (struct sockaddr *)&udp_addr,
+           sizeof(udp_addr));
+
+    sleep(1);
 }
 
+
+
+    close(udp_sock);
+    free(info);
+
+    return NULL;
+}
 struct client_info
 {
     int connfd;
@@ -103,12 +198,15 @@ if (inet_ntop(AF_INET,
 printf("Controller IP: %s\n", client_ip);
 
 
+char buffer[BUFFER_SIZE];
+int authenticated = 0;
+ssize_t bytes_received;
+
+/* UDP monitoring state for this Controller */
+volatile int monitor_running = 0;
+pthread_t monitor_thread;
 
 
-
-    char buffer[BUFFER_SIZE];
-    int authenticated = 0;
-    ssize_t bytes_received;
 
     printf("Controller is being handled by a thread.\n");
 
@@ -968,13 +1066,15 @@ if (strcmp(ready_buffer, "READY") != 0)
     fclose(file);
 }
 
-else if (strncmp(buffer, "MONITOR ", 8) == 0)
+else if (strncmp(buffer, "MONITOR START ", 14) == 0)
 {
-    int seconds;
+    int udp_port;
 
-    if (sscanf(buffer, "MONITOR %d", &seconds) != 1 ||
-        seconds <= 0 ||
-        seconds > 60)
+    if (sscanf(buffer,
+               "MONITOR START %d",
+               &udp_port) != 1 ||
+        udp_port < 1 ||
+        udp_port > 65535)
     {
         char response[BUFFER_SIZE];
 
@@ -991,23 +1091,110 @@ else if (strncmp(buffer, "MONITOR ", 8) == 0)
         continue;
     }
 
+    if (monitor_running)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR MONITOR_ALREADY_RUNNING SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    struct monitor_info *monitor =
+        malloc(sizeof(struct monitor_info));
+
+    if (monitor == NULL)
+    {
+        char response[BUFFER_SIZE];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 002 INTERNAL_ERROR SID:%s\n",
+                 SID);
+
+        send(connfd,
+             response,
+             strlen(response),
+             0);
+
+        continue;
+    }
+
+    strncpy(monitor->client_ip,
+            client_ip,
+            sizeof(monitor->client_ip) - 1);
+
+    monitor->client_ip[
+        sizeof(monitor->client_ip) - 1] = '\0';
+
+    monitor->udp_port = udp_port;
+    monitor->running = &monitor_running;
+
+    monitor_running = 1;
+
+    if (pthread_create(&monitor_thread,
+                       NULL,
+                       send_udp_monitor,
+                       monitor) != 0)
+    {
+        perror("pthread_create");
+
+        monitor_running = 0;
+        free(monitor);
+
+        continue;
+    }
+
     char response[BUFFER_SIZE];
 
     snprintf(response,
              sizeof(response),
-             "OK MONITOR %d UDP:%d SID:%s\n",
-             seconds,
-             UDP_PORT,
+             "OK MONITOR START UDP:%d SID:%s\n",
+             udp_port,
              SID);
 
     send(connfd,
          response,
          strlen(response),
          0);
-
-    send_udp_monitor(client_ip, seconds);
 }
 
+else if (strcmp(buffer, "MONITOR STOP") == 0)
+{
+    char response[BUFFER_SIZE];
+
+    if (!monitor_running)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR MONITOR_NOT_RUNNING SID:%s\n",
+                 SID);
+    }
+    else
+    {
+        monitor_running = 0;
+
+        pthread_join(monitor_thread, NULL);
+
+        snprintf(response,
+                 sizeof(response),
+                 "OK MONITOR STOP SID:%s\n",
+                 SID);
+    }
+
+    send(connfd,
+         response,
+         strlen(response),
+         0);
+}
 
         /* Temporary response for future commands */
         else
